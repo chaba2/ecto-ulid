@@ -8,8 +8,8 @@ on:
 env:
   MIX_ENV: test
   CI_ELIXIR_VERSION: "1.20"
-  CI_OTP_VERSION: "28.0"
-  CI_BEAM_VERSION: "1.20-28.0"
+  CI_OTP_VERSION: "28.5"
+  CI_BEAM_VERSION: "1.20-28.5"
 
 jobs:
   test:
@@ -25,9 +25,9 @@ jobs:
           - elixir: "1.18"
             otp: "27.3"
           - elixir: "1.19"
-            otp: "28.0"
+            otp: "28.5"
           - elixir: "1.20"
-            otp: "28.0"
+            otp: "28.5"
 
     runs-on: blacksmith-2vcpu-ubuntu-2404
 
