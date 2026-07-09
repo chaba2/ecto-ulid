@@ -7,41 +7,49 @@ on:
 
 env:
   MIX_ENV: test
+  CI_ELIXIR_VERSION: "1.20"
+  CI_OTP_VERSION: "28.0"
+  CI_BEAM_VERSION: "1.20-28.0"
 
 jobs:
   test:
-    name: Unit tests
+    name: Unit Test (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
-        elixir:
-          - 1.14.2
-          - 1.13.4
-        erlang:
-          - 25.2
-          - 24.3
+        include:
+          # https://hexdocs.pm/elixir/compatibility-and-deprecations.html
+          # compatibility between Elixir and Erlang/OTP
+          - elixir: "1.17"
+            otp: "27.3"
+          - elixir: "1.18"
+            otp: "27.3"
+          - elixir: "1.19"
+            otp: "28.0"
+          - elixir: "1.20"
+            otp: "28.0"
 
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6.0.3
 
       - name: Dependency cache
-        uses: actions/cache@v3
+        uses: actions/cache@v5.0.5
         with:
           path: |
             deps
             _build
-          key: mix-test-${{ runner.os }}-${{ hashFiles('**/mix.lock') }}
+          key: test-${{ matrix.elixir }}-${{ hashFiles('mix.exs') }}
           restore-keys: |
-            mix-test-${{ runner.os }}-${{ hashFiles('**/mix.lock') }}
+            test-${{ matrix.elixir }}-
             mix-test-${{ runner.os }}-
             mix-test-
 
       - name: Setup Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: ${{ matrix.erlang }}
+          otp-version: ${{ matrix.otp }}
           elixir-version: ${{ matrix.elixir }}
 
       - name: Install dependencies
@@ -62,25 +70,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6.0.3
 
       - name: Dependency cache
-        uses: actions/cache@v3
+        uses: actions/cache@v5.0.5
         with:
           path: |
             deps
             _build
-          key: mix-fmt-${{ runner.os }}-${{ hashFiles('**/mix.lock') }}
+          key: fmt-${{ env.CI_BEAM_VERSION }}-${{ hashFiles('mix.exs') }}
           restore-keys: |
-            mix-fmt-${{ runner.os }}-${{ hashFiles('**/mix.lock') }}
+            fmt-${{ env.CI_BEAM_VERSION }}-
             mix-fmt-${{ runner.os }}-
             mix-fmt-
 
       - name: Setup Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "25.1.2"
-          elixir-version: "1.14.2"
+          otp-version: ${{ env.CI_OTP_VERSION }}
+          elixir-version: ${{ env.CI_ELIXIR_VERSION }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -93,25 +101,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6.0.3
 
       - name: Dependency cache
-        uses: actions/cache@v3
+        uses: actions/cache@v5.0.5
         with:
           path: |
             deps
             _build
-          key: mix-lint-${{ runner.os }}-${{ hashFiles('**/mix.lock') }}
+          key: lint-${{ env.CI_BEAM_VERSION }}-${{ hashFiles('mix.exs') }}
           restore-keys: |
-            mix-lint-${{ runner.os }}-${{ hashFiles('**/mix.lock') }}
+            lint-${{ env.CI_BEAM_VERSION }}-
             mix-lint-${{ runner.os }}-
             mix-lint-
 
       - name: Setup Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "25.1.2"
-          elixir-version: "1.14.2"
+          otp-version: ${{ env.CI_OTP_VERSION }}
+          elixir-version: ${{ env.CI_ELIXIR_VERSION }}
 
       - name: Install dependencies
         run: |
@@ -126,25 +134,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6.0.3
 
       - name: Dependency cache
-        uses: actions/cache@v3
+        uses: actions/cache@v5.0.5
         with:
           path: |
             deps
             _build
-          key: mix-dev-dialyzer-${{ runner.os }}-${{ hashFiles('**/mix.lock') }}
+          key: dialyzer-${{ env.CI_BEAM_VERSION }}-${{ hashFiles('mix.exs') }}
           restore-keys: |
-            mix-dev-dialyzer-${{ runner.os }}-${{ hashFiles('**/mix.lock') }}
+            dialyzer-${{ env.CI_BEAM_VERSION }}-
             mix-dev-dialyzer-${{ runner.os }}-
             mix-dev-dialyzer-
 
       - name: Setup Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "25.1.2"
-          elixir-version: "1.14.2"
+          otp-version: ${{ env.CI_OTP_VERSION }}
+          elixir-version: ${{ env.CI_ELIXIR_VERSION }}
 
       - name: Install dependencies
         run: |
