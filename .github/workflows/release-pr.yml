@@ -1,0 +1,302 @@
+---
+name: Auto-create Release PR
+
+"on":
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'CHANGELOG.md'
+      - 'mix.exs'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-pr-main
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      release_token_available: ${{ steps.release-token.outputs.available }}
+    steps:
+      - name: Check release token
+        id: release-token
+        env:
+          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          if [ -n "${RELEASE_APP_ID}" ] &&
+            [ -n "${RELEASE_APP_PRIVATE_KEY}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "::error title=Release secrets missing::Configure secrets."
+            exit 1
+          fi
+
+          echo "::notice title=Release skipped::Configure release app secrets."
+          echo "::notice title=Release skipped::GITHUB_TOKEN cannot be used."
+          echo "available=false" >> "$GITHUB_OUTPUT"
+
+  create-release-pr:
+    needs: preflight
+    if: needs.preflight.outputs.release_token_available == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release app token
+        id: release-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+          token: ${{ steps.release-token.outputs.token }}
+
+      - name: Skip release commits
+        id: skip
+        run: |
+          release_commit_regex='^chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+$'
+
+          if git log -1 --pretty=%s | grep -Eq "${release_commit_regex}"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Check for unreleased commits
+        if: steps.skip.outputs.skip == 'false'
+        id: changes
+        run: |
+          latest_tag="$(
+            git describe --tags --abbrev=0 \
+              --match 'v*' \
+              --match '[0-9]*' \
+              2>/dev/null || true
+          )"
+          head_sha="$(git rev-parse HEAD)"
+          head_short_sha="$(git rev-parse --short HEAD)"
+
+          if [ -n "${latest_tag}" ]; then
+            ahead="$(git rev-list --count "${latest_tag}"..HEAD)"
+            compare_url="${{ github.server_url }}"
+            compare_url="${compare_url}/${{ github.repository }}"
+            compare_url="${compare_url}/compare/${latest_tag}...${head_sha}"
+            compare_label="${latest_tag}...${head_short_sha}"
+          else
+            ahead="$(git rev-list --count HEAD)"
+            compare_url=""
+            compare_label=""
+          fi
+
+          echo "latest_tag=${latest_tag}" >> "$GITHUB_OUTPUT"
+          echo "ahead=${ahead}" >> "$GITHUB_OUTPUT"
+          echo "compare_url=${compare_url}" >> "$GITHUB_OUTPUT"
+          echo "compare_label=${compare_label}" >> "$GITHUB_OUTPUT"
+
+          if [ "${ahead}" -eq 0 ]; then
+            echo "No unreleased commits found"
+          else
+            base="${latest_tag:-repo start}"
+            echo "Found ${ahead} unreleased commits since ${base}"
+          fi
+
+      - name: Compute next version
+        if: >-
+          steps.skip.outputs.skip == 'false' &&
+          steps.changes.outputs.ahead != '0'
+        id: next-version
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --bumped-version
+        env:
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Normalize next tag
+        if: >-
+          steps.skip.outputs.skip == 'false' &&
+          steps.changes.outputs.ahead != '0'
+        id: next-tag
+        env:
+          NEXT_VERSION: ${{ steps.next-version.outputs.content }}
+        run: |
+          next_version="${NEXT_VERSION#v}"
+          echo "tag=v${next_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if no version bump is needed
+        if: >-
+          steps.skip.outputs.skip == 'false' &&
+          steps.changes.outputs.ahead != '0'
+        id: version-check
+        env:
+          LATEST_TAG: ${{ steps.changes.outputs.latest_tag }}
+          NEXT_TAG: ${{ steps.next-tag.outputs.tag }}
+        run: |
+          latest_version="${LATEST_TAG#v}"
+          next_version="${NEXT_TAG#v}"
+
+          if [ -n "${latest_version}" ] &&
+            [ "${latest_version}" = "${next_version}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release files
+        if: >-
+          steps.skip.outputs.skip == 'false' &&
+          steps.changes.outputs.ahead != '0' &&
+          steps.version-check.outputs.skip == 'false'
+        env:
+          RELEASE_TAG: ${{ steps.next-tag.outputs.tag }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          sed -i.bak -E \
+            "s/^  @version \".*\"/  @version \"${version}\"/" \
+            mix.exs
+          rm -f mix.exs.bak
+
+      - name: Generate changelog
+        if: >-
+          steps.skip.outputs.skip == 'false' &&
+          steps.changes.outputs.ahead != '0' &&
+          steps.version-check.outputs.skip == 'false'
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --tag ${{ steps.next-tag.outputs.tag }}
+        env:
+          OUTPUT: CHANGELOG.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Generate release notes preview
+        if: >-
+          steps.skip.outputs.skip == 'false' &&
+          steps.changes.outputs.ahead != '0' &&
+          steps.version-check.outputs.skip == 'false'
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: >-
+            --unreleased --tag ${{ steps.next-tag.outputs.tag }}
+            --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Create or update release branch
+        if: >-
+          steps.skip.outputs.skip == 'false' &&
+          steps.changes.outputs.ahead != '0' &&
+          steps.version-check.outputs.skip == 'false'
+        env:
+          RELEASE_TAG: ${{ steps.next-tag.outputs.tag }}
+        run: |
+          branch="release/next"
+
+          git checkout -B "${branch}"
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add CHANGELOG.md mix.exs
+
+          if git diff --cached --quiet; then
+            echo "Release branch already matches generated files"
+          else
+            git commit -m "chore(release): ${RELEASE_TAG}"
+          fi
+
+          git push --force-with-lease origin "${branch}"
+
+      - name: Create PR body
+        if: >-
+          steps.skip.outputs.skip == 'false' &&
+          steps.changes.outputs.ahead != '0' &&
+          steps.version-check.outputs.skip == 'false'
+        env:
+          RELEASE_TAG: ${{ steps.next-tag.outputs.tag }}
+          AHEAD: ${{ steps.changes.outputs.ahead }}
+          COMPARE_URL: ${{ steps.changes.outputs.compare_url }}
+          COMPARE_LABEL: ${{ steps.changes.outputs.compare_label }}
+        run: |
+          if [ -n "${COMPARE_URL}" ]; then
+            compare_line="- Diff: [\`${COMPARE_LABEL}\`](${COMPARE_URL})"
+          else
+            compare_line="- Diff: unavailable until the first tag exists"
+          fi
+
+          cat > /tmp/release-pr-body.md <<EOF
+          <!-- auto-release-pr -->
+          ## Release
+
+          This PR prepares \`${RELEASE_TAG}\`.
+
+          - Commits since last tag: ${AHEAD}
+          ${compare_line}
+          - Source branch: \`release/next\`
+          - Base branch: \`${{ github.event.repository.default_branch }}\`
+
+          ## Notes Preview
+
+          $(cat RELEASE_NOTES.md)
+          EOF
+
+      - name: Find existing release PR
+        if: >-
+          steps.skip.outputs.skip == 'false' &&
+          steps.changes.outputs.ahead != '0' &&
+          steps.version-check.outputs.skip == 'false'
+        id: existing-pr
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+        run: |
+          pr_number="$(gh pr list \
+            --base "${{ github.event.repository.default_branch }}" \
+            --head "release/next" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          echo "pr_number=${pr_number}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release PR
+        if: >-
+          steps.skip.outputs.skip == 'false' &&
+          steps.changes.outputs.ahead != '0' &&
+          steps.version-check.outputs.skip == 'false' &&
+          steps.existing-pr.outputs.pr_number == ''
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          RELEASE_TAG: ${{ steps.next-tag.outputs.tag }}
+        run: |
+          gh pr create \
+            --base "${{ github.event.repository.default_branch }}" \
+            --head "release/next" \
+            --title "chore(release): ${RELEASE_TAG}" \
+            --body-file /tmp/release-pr-body.md
+
+      - name: Update existing release PR
+        if: >-
+          steps.skip.outputs.skip == 'false' &&
+          steps.changes.outputs.ahead != '0' &&
+          steps.version-check.outputs.skip == 'false' &&
+          steps.existing-pr.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          RELEASE_TAG: ${{ steps.next-tag.outputs.tag }}
+        run: |
+          gh pr edit "${{ steps.existing-pr.outputs.pr_number }}" \
+            --title "chore(release): ${RELEASE_TAG}" \
+            --body-file /tmp/release-pr-body.md
